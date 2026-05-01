@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import { supabase } from "./supabase";
+import AuthScreen from "./AuthScreen";
 
 const COLORS = {
   bg: "linear-gradient(135deg, #c4b5fd 0%, #e879f9 55%, #f9a8d4 100%)",
@@ -194,20 +196,16 @@ function ConversationGame({ onProgress }) {
     setStarted(true);
     setLoading(true);
     try {
-      const geminiKey = import.meta.env.VITE_GEMINI_API_KEY;
-      console.log("[Bloom] VITE_GEMINI_API_KEY loaded:", geminiKey ? `✅ (${geminiKey.length} chars)` : "❌ undefined");
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents: [{ role: "user", parts: [{ text: "Please start our conversation with a warm greeting." }] }],
-          generationConfig: { maxOutputTokens: 1000 },
-        }),
+      const anthropicKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+      console.log("[Bloom] VITE_ANTHROPIC_API_KEY loaded:", anthropicKey ? `✅ (${anthropicKey.length} chars)` : "❌ undefined");
+      const data = await claudeCall({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: "Please start our conversation with a warm greeting." }],
       });
-      const data = await res.json();
       console.log("[Bloom] startChat response:", JSON.stringify(data, null, 2));
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "Kumusta! Hello! How are you today? 🌸";
+      const text = data.content?.[0]?.text || "Kumusta! Hello! How are you today? 🌸";
       setMessages([{ role: "assistant", content: text }]);
       lastBloomMsgTime.current = Date.now();
     } catch (err) {
@@ -219,21 +217,16 @@ function ConversationGame({ onProgress }) {
 
   const detectLanguage = async (text) => {
     try {
-      const geminiKey = import.meta.env.VITE_GEMINI_API_KEY;
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: `Classify the language of the user's message as exactly one of: "english", "tagalog", or "mixed".
+      const data = await claudeCall({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 20,
+        system: `Classify the language of the user's message as exactly one of: "english", "tagalog", or "mixed".
 Reply with ONLY that single word, nothing else.
 "mixed" means the message contains a meaningful blend of both English and Tagalog words.
-If the message is too short to classify (e.g. "yes", "ok", "oo"), use "mixed".` }] },
-          contents: [{ role: "user", parts: [{ text }] }],
-          generationConfig: { maxOutputTokens: 20 },
-        }),
+If the message is too short to classify (e.g. "yes", "ok", "oo"), use "mixed".`,
+        messages: [{ role: "user", content: text }],
       });
-      const data = await res.json();
-      const raw = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim().toLowerCase();
+      const raw = (data.content?.[0]?.text || "").trim().toLowerCase();
       if (raw === "english" || raw === "tagalog" || raw === "mixed") return raw;
       return "mixed";
     } catch {
@@ -242,6 +235,25 @@ If the message is too short to classify (e.g. "yes", "ok", "oo"), use "mixed".` 
   };
 
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+  const claudeCall = async (body) => {
+    const key = import.meta.env.VITE_ANTHROPIC_API_KEY;
+    const url = "https://api.anthropic.com/v1/messages";
+    const headers = {
+      "Content-Type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    };
+    let res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+    if (res.status === 429) {
+      console.warn("[Bloom] 429 rate limit hit — waiting 30s before retry");
+      setMessages(prev => [...prev, { role: "assistant", content: "Give me a moment to think... 🌸" }]);
+      await sleep(30000);
+      res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+    }
+    return res.json();
+  };
 
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
@@ -254,21 +266,14 @@ If the message is too short to classify (e.g. "yes", "ok", "oo"), use "mixed".` 
     setLoading(true);
 
     try {
-      const replyRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents: newMessages.map(m => ({
-            role: m.role === "assistant" ? "model" : "user",
-            parts: [{ text: m.content }],
-          })),
-          generationConfig: { maxOutputTokens: 1000 },
-        }),
+      const data = await claudeCall({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        system: SYSTEM_PROMPT,
+        messages: newMessages.map(m => ({ role: m.role, content: m.content })),
       });
-      const data = await replyRes.json();
       console.log("[Bloom] sendMessage response:", JSON.stringify(data, null, 2));
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "Maganda! That's wonderful! 🌸";
+      const text = data.content?.[0]?.text || "Maganda! That's wonderful! 🌸";
       setMessages(prev => [...prev, { role: "assistant", content: text }]);
       lastBloomMsgTime.current = Date.now();
       await sleep(500);
@@ -502,150 +507,399 @@ function PictureWordGame({ onProgress }) {
   );
 }
 
-// Progress View
+// Progress View — calendar-based
 function ProgressView({ history }) {
-  const wordTimes = history.filter(h => h.type === "wordMatch").map(h => h.time);
-  const chatMsgs = history.filter(h => h.type === "conversation");
-  const pictureCorrect = history.filter(h => h.type === "pictureWord" && h.correct).length;
-  const pictureTotal = history.filter(h => h.type === "pictureWord").length;
-  const avgWordTime = wordTimes.length ? (wordTimes.reduce((a, b) => a + b, 0) / wordTimes.length).toFixed(1) : null;
+  const [viewTab, setViewTab] = useState("monthly");
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [calDate, setCalDate] = useState(() => new Date());
 
-  // Language breakdown
-  const langCounts = { english: 0, tagalog: 0, mixed: 0 };
-  chatMsgs.forEach(m => { if (m.language) langCounts[m.language]++; });
-  const totalLang = langCounts.english + langCounts.tagalog + langCounts.mixed;
-  const langPct = (k) => totalLang ? Math.round((langCounts[k] / totalLang) * 100) : 0;
+  const today = new Date();
+  const todayStr = today.toLocaleDateString("en-CA"); // YYYY-MM-DD
 
-  // Response times from chat
-  const chatTimes = chatMsgs.filter(m => m.responseTime && m.responseTime > 0 && m.responseTime < 300).map(m => m.responseTime);
-  const avgChatTime = chatTimes.length ? (chatTimes.reduce((a, b) => a + b, 0) / chatTimes.length).toFixed(1) : null;
-  const recentChatTimes = chatTimes.slice(-8);
+  // Group all entries by local date string YYYY-MM-DD
+  const byDate = {};
+  history.forEach(entry => {
+    const d = new Date(entry.timestamp).toLocaleDateString("en-CA");
+    if (!byDate[d]) byDate[d] = [];
+    byDate[d].push(entry);
+  });
 
-  const LANG_COLORS = { english: COLORS.secondary, tagalog: COLORS.primary, mixed: COLORS.accent };
-  const LANG_LABELS = { english: "English 🇺🇸", tagalog: "Tagalog 🇵🇭", mixed: "Taglish 🌸" };
+  const dayActivityColor = (count) => {
+    if (count === 0) return { bg: "#EDE9FE", text: "#a89cc0" };
+    if (count <= 2) return { bg: "#BBF7D0", text: "#065f46" };
+    return { bg: "#10B981", text: "#fff" };
+  };
+
+  const iconBtn = {
+    background: COLORS.primaryLight,
+    border: "none",
+    borderRadius: "8px",
+    width: "28px",
+    height: "28px",
+    cursor: "pointer",
+    fontSize: "1rem",
+    color: COLORS.primary,
+    fontWeight: "700",
+    fontFamily: "inherit",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  };
+
+  // ── MONTHLY ──────────────────────────────────────────────────────────────
+  const renderMonthly = () => {
+    const year = calDate.getFullYear();
+    const month = calDate.getMonth();
+    const firstDow = new Date(year, month, 1).getDay(); // 0=Sun
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const monthLabel = calDate.toLocaleString("en-US", { month: "long", year: "numeric" });
+
+    const cells = [];
+    for (let i = 0; i < firstDow; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+    return (
+      <>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: ".75rem" }}>
+          <button style={iconBtn} onClick={() => setCalDate(new Date(year, month - 1, 1))}>‹</button>
+          <span style={{ fontWeight: "700", color: COLORS.text, fontSize: ".92rem" }}>{monthLabel}</span>
+          <button style={iconBtn} onClick={() => setCalDate(new Date(year, month + 1, 1))}>›</button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "3px", marginBottom: "3px" }}>
+          {["Su","Mo","Tu","We","Th","Fr","Sa"].map(d => (
+            <div key={d} style={{ textAlign: "center", fontSize: ".6rem", color: COLORS.textMuted, fontWeight: "600", paddingBottom: "2px" }}>
+              {d}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "3px" }}>
+          {cells.map((d, i) => {
+            if (d === null) return <div key={`e${i}`} />;
+            const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+            const count = (byDate[dateStr] || []).length;
+            const { bg, text } = dayActivityColor(count);
+            const isToday = dateStr === todayStr;
+            const isSel = dateStr === selectedDay;
+            return (
+              <div
+                key={dateStr}
+                onClick={() => { setSelectedDay(dateStr); setViewTab("daily"); }}
+                style={{
+                  aspectRatio: "1",
+                  borderRadius: "7px",
+                  background: bg,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: ".72rem",
+                  fontWeight: isToday ? "800" : "500",
+                  color: text,
+                  cursor: "pointer",
+                  border: isToday
+                    ? `2px solid ${COLORS.primary}`
+                    : isSel
+                    ? `2px solid ${COLORS.secondary}`
+                    : "2px solid transparent",
+                  transition: "transform .1s",
+                }}
+                onMouseEnter={e => e.currentTarget.style.transform = "scale(1.12)"}
+                onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+              >
+                {d}
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ display: "flex", gap: ".75rem", justifyContent: "center", marginTop: ".85rem" }}>
+          {[
+            { bg: "#EDE9FE", label: "No activity" },
+            { bg: "#BBF7D0", label: "1–2 sessions" },
+            { bg: "#10B981", label: "3+ sessions" },
+          ].map(l => (
+            <div key={l.label} style={{ display: "flex", alignItems: "center", gap: ".3rem", fontSize: ".65rem", color: COLORS.textMuted }}>
+              <div style={{ width: "11px", height: "11px", borderRadius: "3px", background: l.bg, border: "1px solid rgba(0,0,0,.07)", flexShrink: 0 }} />
+              {l.label}
+            </div>
+          ))}
+        </div>
+      </>
+    );
+  };
+
+  // ── DAILY ─────────────────────────────────────────────────────────────────
+  const renderDaily = () => {
+    const dateStr = selectedDay || todayStr;
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const label = new Date(y, m - 1, d).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+    const entries = byDate[dateStr] || [];
+
+    const typeInfo = {
+      wordMatch:    { emoji: "🎯", label: "Word Match" },
+      conversation: { emoji: "💬", label: "Chat" },
+      pictureWord:  { emoji: "🖼️", label: "Picture Quiz" },
+    };
+
+    return (
+      <>
+        <div style={{ display: "flex", alignItems: "center", gap: ".5rem", marginBottom: "1rem" }}>
+          <button style={iconBtn} onClick={() => setViewTab("monthly")}>‹</button>
+          <span style={{ fontWeight: "700", color: COLORS.text, fontSize: ".88rem", lineHeight: 1.3 }}>{label}</span>
+        </div>
+
+        {entries.length === 0 ? (
+          <div style={{ textAlign: "center", color: COLORS.textMuted, padding: "1.25rem 0", fontSize: ".88rem", lineHeight: 1.7 }}>
+            No activity recorded this day 🌱<br />
+            <span style={{ fontStyle: "italic", fontSize: ".8rem" }}>Walang aktibidad ngayong araw</span>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: ".45rem" }}>
+            {entries.map((e, i) => {
+              const info = typeInfo[e.type] || { emoji: "📝", label: e.type };
+              const timeStr = new Date(e.timestamp).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+              let detail = "";
+              if (e.type === "wordMatch" && e.time != null)
+                detail = `${e.time}s to complete`;
+              else if (e.type === "conversation")
+                detail = [e.responseTime && `${e.responseTime}s reply`, e.language].filter(Boolean).join(" · ");
+              else if (e.type === "pictureWord")
+                detail = (e.correct ? "✅ Correct" : "❌ Incorrect") + (e.time != null ? ` · ${e.time}s` : "");
+
+              return (
+                <div key={i} style={{
+                  display: "flex", alignItems: "center", gap: ".7rem",
+                  background: "#F5F0FC", borderRadius: "12px",
+                  padding: ".65rem .85rem",
+                  border: `1.5px solid ${COLORS.border}`,
+                }}>
+                  <span style={{ fontSize: "1.25rem", flexShrink: 0 }}>{info.emoji}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: "600", color: COLORS.text, fontSize: ".88rem" }}>{info.label}</div>
+                    {detail && <div style={{ fontSize: ".73rem", color: COLORS.textMuted, marginTop: "1px" }}>{detail}</div>}
+                  </div>
+                  <div style={{ fontSize: ".68rem", color: COLORS.textMuted, flexShrink: 0 }}>{timeStr}</div>
+                </div>
+              );
+            })}
+            <div style={{ textAlign: "center", fontSize: ".75rem", color: COLORS.primary, fontWeight: "600", marginTop: ".25rem" }}>
+              {entries.length} {entries.length === 1 ? "session" : "sessions"} · Magaling! 🌸
+            </div>
+          </div>
+        )}
+      </>
+    );
+  };
+
+  // ── WEEKLY ────────────────────────────────────────────────────────────────
+  const renderWeekly = () => {
+    const now = new Date();
+    const sundayOffset = now.getDay(); // days since last Sunday
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - sundayOffset);
+
+    const days = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(weekStart);
+      d.setDate(weekStart.getDate() + i);
+      const dateStr = d.toLocaleDateString("en-CA");
+      return {
+        dateStr,
+        shortDay: d.toLocaleDateString("en-US", { weekday: "short" }),
+        dayNum: d.getDate(),
+        count: (byDate[dateStr] || []).length,
+        isToday: dateStr === todayStr,
+      };
+    });
+
+    const maxCount = Math.max(...days.map(d => d.count), 1);
+    const weekTotal = days.reduce((s, d) => s + d.count, 0);
+    const activeDays = days.filter(d => d.count > 0).length;
+
+    return (
+      <>
+        <div style={{ fontWeight: "700", color: COLORS.text, fontSize: ".92rem", textAlign: "center", marginBottom: ".25rem" }}>
+          This Week
+        </div>
+        <div style={{ fontSize: ".75rem", color: COLORS.textMuted, textAlign: "center", marginBottom: "1rem" }}>
+          {weekTotal} total sessions · {activeDays}/7 days active
+        </div>
+
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "5px", height: "90px" }}>
+          {days.map(({ dateStr, shortDay, dayNum, count, isToday }) => {
+            const barH = count === 0 ? 5 : Math.max(14, (count / maxCount) * 78);
+            return (
+              <div
+                key={dateStr}
+                onClick={() => { setSelectedDay(dateStr); setViewTab("daily"); }}
+                style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "3px", cursor: "pointer" }}
+              >
+                <div style={{ fontSize: ".62rem", color: count > 0 ? COLORS.primary : "transparent", fontWeight: "700" }}>
+                  {count}
+                </div>
+                <div style={{
+                  width: "100%",
+                  height: `${barH}px`,
+                  borderRadius: "5px 5px 0 0",
+                  background: count === 0
+                    ? "#EDE9FE"
+                    : isToday
+                    ? `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.secondary})`
+                    : `linear-gradient(135deg, #10B981, #059669)`,
+                  border: isToday ? `2px solid ${COLORS.primary}` : "none",
+                  transition: "height .3s",
+                }} />
+                <div style={{ fontSize: ".62rem", fontWeight: isToday ? "800" : "500", color: isToday ? COLORS.primary : COLORS.textMuted }}>
+                  {shortDay}
+                </div>
+                <div style={{ fontSize: ".58rem", color: COLORS.textMuted }}>{dayNum}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ marginTop: ".9rem", textAlign: "center", fontSize: ".73rem", color: COLORS.textMuted }}>
+          Tap a bar to see that day · I-tap para makita ang araw
+        </div>
+      </>
+    );
+  };
+
+  // ── YEARLY ────────────────────────────────────────────────────────────────
+  const renderYearly = () => {
+    const year = calDate.getFullYear();
+    const thisYear = today.getFullYear();
+    const thisMonth = today.getMonth();
+
+    const months = Array.from({ length: 12 }, (_, m) => {
+      const prefix = `${year}-${String(m + 1).padStart(2, "0")}`;
+      const count = Object.entries(byDate)
+        .filter(([d]) => d.startsWith(prefix))
+        .reduce((sum, [, arr]) => sum + arr.length, 0);
+      return {
+        m,
+        name: new Date(year, m, 1).toLocaleString("en-US", { month: "short" }),
+        count,
+      };
+    });
+
+    const maxCount = Math.max(...months.map(m => m.count), 1);
+
+    const monthBg = (count) => {
+      if (count === 0) return "#EDE9FE";
+      const ratio = count / maxCount;
+      if (ratio < 0.25) return "#D1FAE5";
+      if (ratio < 0.6)  return "#6EE7B7";
+      return "#10B981";
+    };
+
+    const yearTotal = months.reduce((s, m) => s + m.count, 0);
+
+    return (
+      <>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: ".5rem" }}>
+          <button style={iconBtn} onClick={() => setCalDate(new Date(year - 1, 0, 1))}>‹</button>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontWeight: "700", color: COLORS.text, fontSize: ".92rem" }}>{year}</div>
+            <div style={{ fontSize: ".7rem", color: COLORS.textMuted }}>{yearTotal} total sessions</div>
+          </div>
+          <button style={iconBtn} onClick={() => setCalDate(new Date(year + 1, 0, 1))}>›</button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: ".45rem", marginTop: ".5rem" }}>
+          {months.map(({ m, name, count }) => {
+            const isCurrent = year === thisYear && m === thisMonth;
+            return (
+              <div
+                key={m}
+                onClick={() => { setCalDate(new Date(year, m, 1)); setViewTab("monthly"); }}
+                style={{
+                  background: monthBg(count),
+                  borderRadius: "11px",
+                  padding: ".65rem .4rem",
+                  textAlign: "center",
+                  cursor: "pointer",
+                  border: isCurrent ? `2px solid ${COLORS.primary}` : "2px solid transparent",
+                  transition: "transform .1s",
+                }}
+                onMouseEnter={e => e.currentTarget.style.transform = "scale(1.04)"}
+                onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+              >
+                <div style={{ fontWeight: "700", color: COLORS.text, fontSize: ".82rem" }}>{name}</div>
+                <div style={{ fontSize: ".72rem", color: count > 0 ? "#065f46" : COLORS.textMuted, fontWeight: "600", marginTop: "2px" }}>
+                  {count > 0 ? `${count} 🌸` : "–"}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ marginTop: ".75rem", textAlign: "center", fontSize: ".72rem", color: COLORS.textMuted }}>
+          Tap a month to see its calendar · I-tap ang buwan
+        </div>
+      </>
+    );
+  };
+
+  const VIEW_TABS = [
+    { id: "daily",   label: "Daily"   },
+    { id: "weekly",  label: "Weekly"  },
+    { id: "monthly", label: "Monthly" },
+    { id: "yearly",  label: "Yearly"  },
+  ];
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: ".85rem" }}>
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: "2rem" }}>📊</div>
-        <div style={{ fontSize: "1.1rem", fontWeight: "700", color: COLORS.text }}>Your Progress</div>
-        <div style={{ fontSize: ".85rem", color: COLORS.textMuted, fontStyle: "italic" }}>Ang Iyong Progreso · Tuloy lang! 🌸</div>
+        <div style={{ fontSize: "1.05rem", fontWeight: "700", color: COLORS.text }}>📊 Your Progress</div>
+        <div style={{ fontSize: ".78rem", color: COLORS.textMuted, fontStyle: "italic", marginTop: "2px" }}>
+          Ang Iyong Progreso · Tuloy lang! 🌸
+        </div>
       </div>
 
-      {/* Summary stats */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: ".65rem" }}>
-        {[
-          { label: "Chat Messages", value: chatMsgs.length, emoji: "💬", color: COLORS.secondary },
-          { label: "Avg Reply Time", value: avgChatTime ? `${avgChatTime}s` : "–", emoji: "⏱️", color: COLORS.primary },
-          { label: "Picture Correct", value: pictureTotal ? `${pictureCorrect}/${pictureTotal}` : "–", emoji: "🖼️", color: COLORS.accent },
-          { label: "Avg Match Time", value: avgWordTime ? `${avgWordTime}s` : "–", emoji: "🎯", color: COLORS.success },
-        ].map((s) => (
-          <div key={s.label} style={{
-            background: COLORS.card, border: `2px solid ${COLORS.border}`,
-            borderRadius: "14px", padding: ".85rem", textAlign: "center",
-          }}>
-            <div style={{ fontSize: "1.4rem" }}>{s.emoji}</div>
-            <div style={{ fontSize: "1.4rem", fontWeight: "800", color: s.color, lineHeight: 1.2 }}>{s.value || "–"}</div>
-            <div style={{ fontSize: ".7rem", color: COLORS.textMuted, marginTop: "2px" }}>{s.label}</div>
-          </div>
+      {/* View tab strip */}
+      <div style={{ display: "flex", background: "#EDE9FE", borderRadius: "11px", padding: "3px", gap: "3px" }}>
+        {VIEW_TABS.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setViewTab(t.id)}
+            style={{
+              flex: 1,
+              border: "none",
+              borderRadius: "8px",
+              padding: ".38rem .2rem",
+              fontSize: ".7rem",
+              fontWeight: "700",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              background: viewTab === t.id ? "#fff" : "transparent",
+              color: viewTab === t.id ? COLORS.primary : COLORS.textMuted,
+              boxShadow: viewTab === t.id ? "0 1px 4px rgba(0,0,0,.1)" : "none",
+              transition: "all .15s",
+            }}
+          >
+            {t.label}
+          </button>
         ))}
       </div>
 
-      {/* Language breakdown */}
-      {totalLang > 0 && (
-        <div style={{ background: COLORS.card, border: `2px solid ${COLORS.border}`, borderRadius: "14px", padding: "1rem" }}>
-          <div style={{ fontSize: ".85rem", fontWeight: "700", color: COLORS.text, marginBottom: ".75rem" }}>
-            🗣️ Language Used in Chat
-          </div>
-          {/* Bar */}
-          <div style={{ display: "flex", borderRadius: "8px", overflow: "hidden", height: "16px", marginBottom: ".75rem" }}>
-            {["english", "tagalog", "mixed"].map(k => langPct(k) > 0 && (
-              <div key={k} style={{
-                width: `${langPct(k)}%`, background: LANG_COLORS[k],
-                transition: "width .5s",
-              }} />
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap" }}>
-            {["english", "tagalog", "mixed"].map(k => (
-              <div key={k} style={{ display: "flex", alignItems: "center", gap: ".3rem", fontSize: ".8rem", color: COLORS.text }}>
-                <div style={{ width: "10px", height: "10px", borderRadius: "50%", background: LANG_COLORS[k], flexShrink: 0 }} />
-                <span>{LANG_LABELS[k]}</span>
-                <span style={{ fontWeight: "700", color: LANG_COLORS[k] }}>{langPct(k)}%</span>
-              </div>
-            ))}
-          </div>
-          {langCounts.tagalog > 0 && (
-            <div style={{ marginTop: ".65rem", fontSize: ".8rem", color: COLORS.success, fontWeight: "600" }}>
-              {langCounts.tagalog >= langCounts.english
-                ? "🇵🇭 Great Tagalog practice! Magaling!"
-                : "💪 Keep using Tagalog — Huwag mahiyang magsalita!"}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Chat response time chart */}
-      {recentChatTimes.length > 1 && (
-        <div style={{ background: COLORS.card, border: `2px solid ${COLORS.border}`, borderRadius: "14px", padding: "1rem" }}>
-          <div style={{ fontSize: ".85rem", fontWeight: "700", color: COLORS.text, marginBottom: ".65rem" }}>
-            ⚡ Chat Reply Speed (last {recentChatTimes.length} messages)
-          </div>
-          <div style={{ display: "flex", alignItems: "flex-end", gap: "5px", height: "52px" }}>
-            {recentChatTimes.map((t, i) => {
-              const maxT = Math.max(...recentChatTimes);
-              const h = Math.max(6, (t / maxT) * 48);
-              const improving = i > 0 && t < recentChatTimes[i - 1];
-              return (
-                <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" }}>
-                  <div style={{
-                    width: "100%", height: `${h}px`,
-                    background: improving ? COLORS.success : COLORS.secondary,
-                    borderRadius: "4px 4px 0 0", transition: "height .3s",
-                  }} />
-                  <div style={{ fontSize: ".6rem", color: COLORS.textMuted }}>{t}s</div>
-                </div>
-              );
-            })}
-          </div>
-          {recentChatTimes.length > 2 && recentChatTimes[recentChatTimes.length - 1] < recentChatTimes[0] && (
-            <div style={{ marginTop: ".5rem", textAlign: "center", color: COLORS.success, fontSize: ".8rem", fontWeight: "600" }}>
-              🎉 Replying faster! Bumibilis ang sagot mo!
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Word match chart */}
-      {wordTimes.length > 1 && (
-        <div style={{ background: COLORS.card, border: `2px solid ${COLORS.border}`, borderRadius: "14px", padding: "1rem" }}>
-          <div style={{ fontSize: ".85rem", fontWeight: "700", color: COLORS.text, marginBottom: ".65rem" }}>
-            🎯 Word Match Speed
-          </div>
-          <div style={{ display: "flex", alignItems: "flex-end", gap: "5px", height: "52px" }}>
-            {wordTimes.map((t, i) => {
-              const maxT = Math.max(...wordTimes);
-              const h = Math.max(6, (t / maxT) * 48);
-              const improving = i > 0 && t < wordTimes[i - 1];
-              return (
-                <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" }}>
-                  <div style={{ width: "100%", height: `${h}px`, background: improving ? COLORS.success : COLORS.primary, borderRadius: "4px 4px 0 0" }} />
-                  <div style={{ fontSize: ".6rem", color: COLORS.textMuted }}>{t}s</div>
-                </div>
-              );
-            })}
-          </div>
-          {wordTimes[wordTimes.length - 1] < wordTimes[0] && (
-            <div style={{ marginTop: ".5rem", textAlign: "center", color: COLORS.success, fontSize: ".8rem", fontWeight: "600" }}>
-              🎉 Getting faster! Bumibilis ka na!
-            </div>
-          )}
-        </div>
-      )}
+      {/* Calendar / chart panel */}
+      <div style={{
+        background: COLORS.card,
+        border: `2px solid ${COLORS.border}`,
+        borderRadius: "16px",
+        padding: "1rem",
+      }}>
+        {viewTab === "daily"   && renderDaily()}
+        {viewTab === "weekly"  && renderWeekly()}
+        {viewTab === "monthly" && renderMonthly()}
+        {viewTab === "yearly"  && renderYearly()}
+      </div>
 
       {history.length === 0 && (
-        <div style={{ textAlign: "center", color: COLORS.textMuted, padding: "1rem", fontSize: ".9rem", lineHeight: 1.6 }}>
-          Start chatting or playing games to see your progress! 🌱<br />
+        <div style={{ textAlign: "center", color: COLORS.textMuted, fontSize: ".83rem", lineHeight: 1.7 }}>
+          Start playing to see your progress here! 🌱<br />
           <span style={{ fontStyle: "italic" }}>Maglaro na para makita ang progreso mo!</span>
         </div>
       )}
@@ -676,19 +930,114 @@ const TABS = [
   { id: "progress", label: "Progress" },
 ];
 
+// Map a Supabase row back to the shape ProgressView expects
+function rowToEntry(row) {
+  if (row.type === "wordMatch") {
+    return { type: "wordMatch", time: row.score, timestamp: new Date(row.created_at).getTime() };
+  }
+  if (row.type === "conversation") {
+    return { type: "conversation", responseTime: row.response_time, language: row.language_used, timestamp: new Date(row.created_at).getTime() };
+  }
+  if (row.type === "pictureWord") {
+    return { type: "pictureWord", correct: row.score === 1, time: row.response_time, timestamp: new Date(row.created_at).getTime() };
+  }
+  return null;
+}
+
 export default function App() {
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [tab, setTab] = useState("chat");
   const [progressHistory, setProgressHistory] = useState([]);
   const [gameKey, setGameKey] = useState(0);
 
-  const addProgress = (entry) => {
-    setProgressHistory(h => [...h, { ...entry, timestamp: Date.now() }]);
+  // Auth state listener
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Save profile and load history when user logs in
+  useEffect(() => {
+    if (!user) {
+      setProgressHistory([]);
+      return;
+    }
+
+    // Upsert profile
+    supabase.from("profiles").upsert({ id: user.id, email: user.email }, { onConflict: "id", ignoreDuplicates: true });
+
+    // Fetch progress history
+    supabase
+      .from("progress_entries")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: true })
+      .then(({ data, error }) => {
+        if (error) { console.error("[Bloom] fetch progress error:", error); return; }
+        const entries = (data || []).map(rowToEntry).filter(Boolean);
+        setProgressHistory(entries);
+      });
+  }, [user]);
+
+  const addProgress = async (entry) => {
+    console.log("[Bloom] addProgress called with entry:", entry);
+    console.log("[Bloom] current user at call time:", user ? `id=${user.id} email=${user.email}` : "null — will skip DB insert");
+
+    const withTimestamp = { ...entry, timestamp: Date.now() };
+    setProgressHistory(h => [...h, withTimestamp]);
+
+    if (!user) {
+      console.warn("[Bloom] addProgress: user is null, skipping Supabase insert");
+      return;
+    }
+
+    const row = {
+      user_id: user.id,
+      date: new Date().toISOString(),
+      type: entry.type,
+      score: entry.type === "wordMatch" ? entry.time
+           : entry.type === "pictureWord" ? (entry.correct ? 1 : 0)
+           : null,
+      response_time: entry.type === "conversation" ? entry.responseTime
+                   : entry.type === "pictureWord" ? parseFloat(entry.time)
+                   : null,
+      language_used: entry.type === "conversation" ? entry.language : null,
+    };
+
+    console.log("[Bloom] inserting row into progress_entries:", row);
+    const { data, error } = await supabase.from("progress_entries").insert(row).select();
+    if (error) {
+      console.error("[Bloom] INSERT FAILED — code:", error.code, "| message:", error.message, "| details:", error.details, "| hint:", error.hint);
+    } else {
+      console.log("[Bloom] INSERT SUCCESS — saved row:", data);
+    }
   };
 
   const switchTab = (id) => {
     setTab(id);
     if (id !== "progress") setGameKey(k => k + 1);
   };
+
+  const handleSignOut = () => supabase.auth.signOut();
+
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ color: "#fff", fontSize: "1.1rem", fontFamily: "'Inter', system-ui, sans-serif" }}>Loading... 🌸</div>
+      </div>
+    );
+  }
+
+  if (!user) return <AuthScreen />;
 
   return (
     <div style={{
@@ -715,6 +1064,7 @@ export default function App() {
         maxWidth: "480px",
         padding: "2.5rem 1.25rem 1.25rem",
         textAlign: "center",
+        position: "relative",
       }}>
         <div style={{
           fontSize: "2rem",
@@ -734,6 +1084,25 @@ export default function App() {
         }}>
           Your daily mind garden · Ang iyong hardin ng isipan
         </div>
+        <button
+          onClick={handleSignOut}
+          style={{
+            position: "absolute",
+            top: "2.5rem",
+            right: "1.25rem",
+            background: "rgba(255,255,255,0.2)",
+            border: "1px solid rgba(255,255,255,0.35)",
+            borderRadius: "8px",
+            color: "#fff",
+            fontSize: ".75rem",
+            fontWeight: "600",
+            padding: ".35rem .7rem",
+            cursor: "pointer",
+            fontFamily: "inherit",
+          }}
+        >
+          Sign out
+        </button>
       </div>
 
       {/* Card */}
